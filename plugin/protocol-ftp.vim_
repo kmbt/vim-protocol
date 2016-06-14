@@ -1,0 +1,13 @@
+if !get(g:, 'protocol_enable_ftp', 1)
+  finish
+endif
+
+augroup vim_protocol_internal_ftp
+  autocmd! *
+  autocmd BufReadCmd  ftp://*  nested call protocol#handle_autocmd('ftp', 'BufReadCmd')
+  autocmd FileReadCmd ftp://*  nested call protocol#handle_autocmd('ftp', 'FileReadCmd')
+  autocmd SourceCmd   ftp://*  nested call protocol#handle_autocmd('ftp', 'SourceCmd')
+
+  autocmd BufReadCmd  ftp://*/    nested call protocol#handle_autocmd('ftp', 'browse')
+  autocmd BufReadPre  ftp://*/    let b:_protocol_cancel = 'ftp'
+augroup END

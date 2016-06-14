@@ -1,0 +1,218 @@
+let s:V = protocol#vital()
+let s:File = s:V.import('System.File')
+let s:Path = s:V.import('System.Filepath')
+let s:Guard = s:V.import('Vim.Guard')
+let s:Buffer = s:V.import('Vim.Buffer')
+let s:Process = s:V.import('Vim.Process')
+
+function! s:throw(msg) abort
+  call protocol#throw(printf('ftp: %s', a:msg))
+endfunction
+function! s:kioclient_copy(src_uri, target_uri) abort
+  let options = get(a:000, 0, {})
+  if !executable(g:protocol#ftp#kioclient_exec)
+    call s:throw(printf(
+          \ '"%s" is not executable. Assign ftp executable to g:protocol#ftp#kioclient_exec.',
+          \ g:protocol#ftp#kioclient_exec,
+          \))
+  endif
+  let args = [g:protocol#ftp#kioclient_exec, "copy", "--overwrite", a:src_uri, a:target_uri]
+  let result = s:Process.system(args, options)
+  if s:Process.get_last_status()
+    call s:throw(printf(
+          \ 'Fail: %s%s',
+          \ join(args, ' '),
+          \ empty(result) ? '' : "\n" . result,
+          \))
+  endif
+  return protocol#split_posix_text(result)
+endfunction
+function! s:kioclient_cat(uri) abort
+  let options = get(a:000, 0, {})
+  if !executable(g:protocol#ftp#kioclient_exec)
+    call s:throw(printf(
+          \ '"%s" is not executable. Assign kioclient executable to g:protocol#ftp#kioclient_exec.',
+          \ g:protocol#ftp#kioclient_exec,
+          \))
+  endif
+  let command = "cat"
+  let args = [g:protocol#ftp#kioclient_exec, command, a:uri]
+  let result = s:Process.system(args, options)
+  return protocol#split_posix_text(result)
+endfunction
+function! s:kioclient_ls(uri) abort
+  let options = get(a:000, 0, {})
+  if !executable(g:protocol#ftp#kioclient_exec)
+    call s:throw(printf(
+          \ '"%s" is not executable. Assign kioclient executable to g:protocol#ftp#kioclient_exec.',
+          \ g:protocol#ftp#kioclient_exec,
+          \))
+  endif
+  let command = "ls"
+  let args = [g:protocol#ftp#kioclient_exec, command, a:uri]
+  let result = s:Process.system(args, options)
+  return protocol#split_posix_text(result)
+endfunction
+function! s:split_uri(uri) abort
+  return matchlist(
+        \ a:uri,
+        \ '^ftp://\(.*\):\(.\{-}\)$'
+        \)[1 : 2]
+endfunction
+function! s:get_cache_filename(uri) abort
+  let filename = fnameescape(a:uri)
+  let filename = substitute(filename, '[:\/]', '+', 'g')
+  return filename
+endfunction
+function! s:get_local_filename(ftpfile) abort
+  if a:ftpfile !~# '^\a\+://'
+    return a:ftpfile
+  endif
+  let ftpfile = s:Path.join(
+        \ expand(g:protocol#ftp#cache_directory),
+        \ s:get_cache_filename(a:ftpfile),
+        \)
+  if !isdirectory(fnamemodify(ftpfile, ':h'))
+    call mkdir(fnamemodify(ftpfile, ':h'), 'p')
+  endif
+  if !filereadable(ftpfile)
+    let content = protocol#read_content(a:ftpfile)
+    call writefile(content, ftpfile)
+  endif
+  return ftpfile
+endfunction
+
+function! protocol#ftp#read(uri, ...) abort
+  return s:kioclient_cat(a:uri)
+endfunction
+function! protocol#ftp#write(uri, content, ...) abort
+  try
+  	let tempfilename = tempname()
+    call writefile(a:content, tempfilename)
+    call s:kioclient_copy(tempfilename, a:uri)
+  finally
+    call delete(tempfilename)
+  endtry
+endfunction
+function! protocol#ftp#is_writable(uri) abort
+  return 1
+endfunction
+function! protocol#ftp#SourceCmd(uri, ...) abort
+  let cmdarg  = get(a:000, 0, v:cmdarg)
+  let options = protocol#parse_cmdarg(cmdarg)
+  let content = protocol#ftp#read(a:uri)
+  try
+    let tempfile = tempname()
+    call writefile(content, tempfile)
+    execute printf('source %s', fnameescape(tempfile))
+  finally
+    if filereadable(tempfile)
+      call delete(tempfile)
+    endif
+  endtry
+endfunction
+function! protocol#ftp#FileReadCmd(uri, ...) abort
+  call protocol#doautocmd('FileReadPre')
+  if get(b:, '_protocol_cancel', '') !~# '^\%(ftp\)\?$'
+    return
+  endif
+  let options = get(a:000, 0, {})
+  let content = protocol#ftp#read(a:uri)
+  call s:Buffer.read_content(content, options)
+  call protocol#doautocmd('FileReadPost')
+endfunction
+function! protocol#ftp#BufReadCmd(uri, ...) abort
+  call protocol#doautocmd('BufReadPre')
+  if get(b:, '_protocol_cancel', '') !~# '^\%(ftp\)\?$'
+    return
+  endif
+  let options = get(a:000, 0, {})
+  let content = protocol#ftp#read(a:uri)
+  call s:Buffer.edit_content(content, options)
+  setlocal noswapfile buftype=acwrite
+  augroup vim_protocol_internal_ftp_BufReadCmd
+    autocmd! * <buffer>
+    autocmd BufWriteCmd <buffer> call protocol#ftp#BufWriteCmd(expand('<afile>'))
+  augroup END
+  call protocol#doautocmd('BufReadPost')
+endfunction
+function! protocol#ftp#BufWriteCmd(uri, ...) abort
+  call protocol#doautocmd('BufWritePre')
+  if get(b:, '_protocol_cancel', '') !~# '^\%(ftp\)\?$'
+    return
+  endif
+  let options = get(a:000, 0, {})
+  let guard = s:Guard.store('&binary')
+  try
+    set binary
+    let content = getline(1, '$')
+    call protocol#ftp#write(a:uri, content)
+    setlocal nomodified
+  finally
+    call guard.restore()
+  endtry
+  call protocol#doautocmd('BufWritePost')
+endfunction
+
+function! s:open(ftpfile, filename, ...) abort
+  let options = get(a:000, 0, {})
+  let bufname = printf('%s%s', a:ftpfile, a:filename)
+  let guard = s:Guard.store('&eventignore')
+  try
+    set eventignore+=BufReadCmd
+    call s:Buffer.open(bufname, 'edit')
+    call protocol#ftp#BufReadCmd(bufname, options)
+  catch /^protocol:/
+    call protocol#handle_exception()
+  finally
+    call guard.restore()
+  endtry
+endfunction
+function! protocol#ftp#browse(ftpfile, ...) abort
+  let options = get(a:000, 0, {})
+  " let ftpfile = s:get_local_filename(a:ftpfile)
+  " let content = s:unftp(['-Z', '-1', '--', ftpfile])
+  " echo ftpfile
+  let content = s:kioclient_ls(a:ftpfile)
+  " let content = filter(content, 'v:val !~# "/$"')
+  let content = extend([
+        \ printf('%s | Hit <Return> to open a file under the cursor', a:ftpfile),
+        \], content)
+  call s:Buffer.edit_content(content, options)
+  setlocal nomodifiable
+  setlocal noswapfile nobuflisted nowrap
+  setlocal buftype=nofile bufhidden=hide
+  setlocal filetype=protocol-ftp
+  augroup vim_protocol_internal_ftp_browse
+    autocmd! * <buffer>
+    autocmd BufReadCmd <buffer> call protocol#ftp#browse(b:_protocol_ftp_filename)
+  augroup END
+  nnoremap <silent><buffer> <Plug>(protocol-ftp-open)
+        \ :<C-u>call <SID>open(expand('%'), getline('.'))<CR>
+  nmap <buffer> <CR> <Plug>(protocol-ftp-open)
+endfunction
+
+
+function! protocol#ftp#define_highlight() abort
+  highlight default link ProtocolFtpComment Comment
+endfunction
+function! protocol#ftp#define_syntax() abort
+  syntax match ProtocolFtpComment /\%^.*$/
+endfunction
+
+augroup vim_protocol_internal_ftp_pseudo
+  autocmd! *
+  autocmd FileReadPre  ftp://* :
+  autocmd FileReadPost ftp://* :
+  autocmd BufReadPre   ftp://* :
+  autocmd BufReadPost  ftp://* :
+  autocmd BufWritePre  ftp://* :
+  autocmd BufWritePost ftp://* :
+augroup END
+
+call protocol#define_variables('ftp', {
+      \ 'kioclient_exec': 'kioclient',
+      \ 'ftp_exec': 'ftp',
+      \ 'unftp_exec': 'unftp',
+      \ 'cache_directory': '~/.cache/vim-protocol/ftp',
+      \})
