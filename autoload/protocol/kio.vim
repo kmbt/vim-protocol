@@ -170,15 +170,17 @@ function! protocol#kio#define_syntax() abort
   syntax match ProtocolKioComment /\%^.*$/
 endfunction
 
-augroup vim_protocol_internal_kio_pseudo
-  autocmd! *
-  autocmd FileReadPre  ftp://* :
-  autocmd FileReadPost ftp://* :
-  autocmd BufReadPre   ftp://* :
-  autocmd BufReadPost  ftp://* :
-  autocmd BufWritePre  ftp://* :
-  autocmd BufWritePost ftp://* :
-augroup END
+let protocol_kio_pattern = "{ftp,sftp,tar}://*"
+"augroup vim_protocol_internal_kio_pseudo
+  "autocmd! *
+  exe join(["autocmd FileReadPre  ", protocol_kio_pattern, "* :"]):
+  "autocmd FileReadPost ftp://* :
+  exe join(["autocmd FileRead", buf_read_pre, " ";
+  "autocmd BufReadPre   ftp://* :
+  "autocmd BufReadPost  ftp://* :
+  "autocmd BufWritePre  ftp://* :
+  "autocmd BufWritePost ftp://* :
+"augroup END
 
 call protocol#define_variables('kio', {
       \ 'kioclient_exec': 'kioclient',
